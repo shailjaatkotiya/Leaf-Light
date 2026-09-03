@@ -5781,15 +5781,10 @@
   var floor=new THREE.Mesh(new THREE.CircleGeometry(3.2,64),floorMat);
   floor.rotation.x=-Math.PI/2; floor.position.y=-1.30; floor.receiveShadow=true; scene.add(floor);
 
-  // ---- decode + parse embedded GLB ----
-  function b64ToBuf(b64){
-    var bin=atob(b64.trim()); var len=bin.length; var u=new Uint8Array(len);
-    for(var i=0;i<len;i++) u[i]=bin.charCodeAt(i);
-    return u.buffer;
-  }
+  // ---- load GLB ----
   var root=null, edgeMats=[], globeMats=[], allMats=[], tris=0;
 
-  new THREE.GLTFLoader().parse(b64ToBuf(document.getElementById('glbdata').textContent),'',function(gltf){
+  new THREE.GLTFLoader().load('banana_leaf_pendant.glb',function(gltf){
     root=gltf.scene;
     root.traverse(function(o){
       if(!o.isMesh) return;
