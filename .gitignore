@@ -1,7 +1,16 @@
 node_modules
 dist
+.DS_Store
+.vercel
+
+# Decoders are copied out of node_modules by scripts/copy-decoders.mjs
+# on every `npm install`. Never commit them.
 public/draco
 public/basis
+
+# Models are ignored by default so a stray 300 MB export can't be committed
+# by accident. The one model the site ships with is the exception below and
+# is stored in Git LFS.
 public/*.glb
 public/*.gltf
-.DS_Store
+!public/DFA-light.glb
