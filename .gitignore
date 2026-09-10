@@ -1,5 +1,7 @@
+node_modules
+dist
+public/draco
+public/basis
+public/*.glb
+public/*.gltf
 .DS_Store
-node_modules/
-.vercel/
-
-.vercel
