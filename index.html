@@ -80,6 +80,10 @@
   .lite .nm{flex:1;font-size:12px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .lite .x{padding:2px 7px;font-size:13px;line-height:1.1;color:var(--dim)}
   .lite .x:hover{color:#e8927e;border-color:rgba(232,146,126,.5)}
+  .lite .note{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.04em}
+  .lbl .cnt{font-family:var(--mono);font-size:9.5px;color:var(--warm);letter-spacing:.06em;
+            background:rgba(217,171,82,.16);border-radius:5px;padding:1px 6px;margin-left:7px;
+            font-weight:500;text-transform:none}
   .lite[data-off="1"]{opacity:.42}
   .empty{font-size:11.5px;color:var(--dim);font-style:italic}
   button[disabled]{opacity:.38;cursor:default}
@@ -180,7 +184,17 @@
   </section>
 
   <section>
-    <span class="lbl">Scene lights</span>
+    <span class="lbl">Lights in the model<b id="mlCount" class="cnt">&mdash;</b></span>
+    <div id="modelLightList"></div>
+    <div class="chips">
+      <button id="bAllOn">All on</button>
+      <button id="bAllOff">All off</button>
+      <button id="bFileReset">File defaults</button>
+    </div>
+  </section>
+
+  <section>
+    <span class="lbl">Added lights</span>
     <div id="lightList"></div>
     <span class="lbl" style="margin-top:2px">Add light</span>
     <div class="chips">
@@ -191,6 +205,7 @@
       <button data-add="hemisphere">Hemisphere</button>
     </div>
     <div class="chips">
+      <button id="bStudio">Studio fill</button>
       <button id="bGizmo">Show gizmos</button>
       <button id="bReset">Reset rig</button>
     </div>
@@ -6012,13 +6027,16 @@
      candela value is mapped into the units this viewer is tuned in.     */
   var MODEL_GAIN=0.22;    /* glTF candela -> viewer intensity            */
   var MODEL_REACH=1.35;   /* falloff radius, as a multiple of model radius */
-  var modelLights=[], keyLight=null, lampScale=1;
+  var modelLights=[], lampScale=1;
+  /* mrig: one panel entry per light that shipped inside the file. Every one
+     of them is lit on load, and each is adjustable and removable on its own. */
+  var mrig=[], keyEntry=null;
 
   /* ---------------- model ----------------
      The .glb lives beside this page so the model can be re-exported without
      rebuilding the viewer. A copy is embedded as a fallback for contexts that
      cannot fetch a sibling file, and any .glb can be dropped in to replace it. */
-  var MODEL_URL='./DFA_Updated_Light_6Petals.glb';
+  var MODEL_URL='./DFA-light.glb';
   var loader=new THREE.GLTFLoader();
   var root=null, paperMats=[], cutMats=[], edgeMats=[], globeMats=[], allMats=[], tris=0;
   var baseMap=null, baseRough=null;
@@ -6049,7 +6067,9 @@
     if(root){ scene.remove(root); disposeTree(root); }
     root=obj;
     paperMats=[]; cutMats=[]; edgeMats=[]; globeMats=[]; allMats=[]; tris=0;
-    modelLights=[]; keyLight=null;
+    mrig.forEach(function(e){ if(e.helper) scene.remove(e.helper); });
+    modelLights=[]; mrig=[]; keyEntry=null;
+    var mll=$('#modelLightList'); if(mll) mll.innerHTML='';
     baseMap=null; baseRough=null; texCache={};
 
     root.traverse(function(o){
@@ -6100,37 +6120,119 @@
     $('#load').classList.add('gone');
   }
 
+  function lightKind(l){
+    return l.isDirectionalLight?'directional' : l.isSpotLight?'spot' :
+           l.isRectAreaLight?'area'           : l.isHemisphereLight?'hemisphere' :
+           l.isAmbientLight?'ambient'         : 'point';
+  }
+
+  function makeHelper(type,L){
+    try{
+      if(type==='directional') return new THREE.DirectionalLightHelper(L,0.18);
+      if(type==='spot')        return new THREE.SpotLightHelper(L);
+      if(type==='hemisphere')  return new THREE.HemisphereLightHelper(L,0.14);
+      if(type==='point')       return new THREE.PointLightHelper(L,0.05);
+    }catch(err){}
+    return null;
+  }
+
+  /* Every light that shipped inside the .glb becomes a first-class entry in
+     the panel: all of them are lit on load, and each one carries its own
+     intensity, colour, mute and remove control.                          */
   function adoptModelLights(radius){
-    var reach=Math.max(radius,0.001)*MODEL_REACH, best=-1;
-    modelLights.forEach(function(l){
-      if(l.isPointLight||l.isSpotLight){
+    var reach=Math.max(radius,0.001)*MODEL_REACH;
+    mrig=[]; keyEntry=null;
+    modelLights.forEach(function(l,i){
+      var type=lightKind(l);
+      if(type==='point'||type==='spot'){
         l.decay=2;
         if(!l.distance) l.distance=reach;   /* glTF range 0 == unbounded */
       }
-      l.userData.baseIntensity=l.intensity; /* candela, as authored      */
       l.castShadow=false;                   /* a cube shadow each is too costly here */
-      if(l.intensity>best){ best=l.intensity; keyLight=l; }
+      l.userData.baseIntensity=l.intensity; /* candela, as authored      */
+      var def=l.intensity*MODEL_GAIN;       /* ...in the units this viewer is tuned in */
+      var e={id:'m'+(++seq), src:'model', type:type, light:l, parent:l.parent,
+             name:l.name||((TYPES[type]?TYPES[type].label:'Light')+' '+(i+1)),
+             on:true, removed:false, def:def, val:def, helper:makeHelper(type,l),
+             file:{colour:'#'+l.color.getHexString(), intensity:def,
+                   distance:l.distance, decay:l.decay, angle:l.angle,
+                   ground:l.groundColor?('#'+l.groundColor.getHexString()):undefined}};
+      if(e.helper){ e.helper.visible=false; scene.add(e.helper); }
+      mrig.push(e);
+      if(!keyEntry || def>keyEntry.def) keyEntry=e;
     });
+    /* the file's own rig is the default rig -- drop the stand-in studio pair
+       that was put up while the model was still loading. A model that brings
+       no lights of its own gets that pair back, unless a rig has been built. */
+    if(mrig.length) dropAutoFill();
+    else if(!rig.length) studioFill(true);
+    paintModelLights();
     var b=$('#bCentre');
-    b.textContent = modelLights.length
-      ? 'Lamp \u00B7 '+modelLights.length+' light'+(modelLights.length>1?'s':'')
+    b.textContent = mrig.length
+      ? 'Lamp \u00B7 '+mrig.length+' light'+(mrig.length>1?'s':'')
       : 'Centre lamp';
-    b.title = modelLights.length
-      ? modelLights.length+' lights read from the model file'
+    b.title = mrig.length
+      ? mrig.length+' lights read from the model file'
       : 'stand-in lamp \u2014 this model carries no lights of its own';
     setToggle('#bCentre', b.getAttribute('aria-pressed')==='true');
   }
 
-  /* One control for "the fixture's own light": it drives the lights that
-     came out of the file when there are any, and the stand-in pair when
-     there are not, so the two can never double up.                      */
+  /* the model-light list is rebuilt whole: it is short, and this keeps the
+     cards honest after a remove, a revert or a fresh import               */
+  function paintModelLights(){
+    var host=$('#modelLightList'); if(!host) return;
+    host.innerHTML='';
+    var live=0;
+    mrig.forEach(function(e){ if(!e.removed){ card(e); live++; } });
+    var c=$('#mlCount');
+    if(c) c.textContent = mrig.length ? (live===mrig.length? String(live) : live+' / '+mrig.length) : '0';
+    if(!mrig.length){
+      host.appendChild(emptyNote('This model carries no lights of its own \u2014 a stand-in lamp is lighting it.'));
+    } else if(!live){
+      host.appendChild(emptyNote('Every model light removed \u2014 \u201cFile defaults\u201d brings them back.'));
+    }
+  }
+  function emptyNote(txt){
+    var d=document.createElement('div'); d.className='empty'; d.textContent=txt; return d;
+  }
+
+  /* remove a file light from the scene, or put it back where it was authored */
+  function detachModel(e,removed){
+    if(removed && !e.removed){
+      if(e.light.parent) e.light.parent.remove(e.light);
+      if(e.helper) e.helper.visible=false;
+      e.removed=true;
+    } else if(!removed && e.removed){
+      (e.parent||scene).add(e.light);
+      e.removed=false;
+    }
+  }
+
+  function resetModelLights(){
+    mrig.forEach(function(e){
+      detachModel(e,false);
+      e.on=true; e.val=e.file.intensity;
+      e.light.color.set(e.file.colour);
+      if(e.file.ground && e.light.groundColor) e.light.groundColor.set(e.file.ground);
+      if(e.file.distance!==undefined) e.light.distance=e.file.distance;
+      if(e.file.decay!==undefined)    e.light.decay=e.file.decay;
+      if(e.file.angle!==undefined)    e.light.angle=e.file.angle;
+    });
+    paintModelLights(); applyLampOutput();
+  }
+
+  /* One master control for "the fixture's own light": it drives the lights
+     that came out of the file when there are any, and the stand-in pair when
+     there are not, so the two can never double up. Each file light keeps its
+     own trim (e.val) underneath it.                                        */
   function applyLampOutput(){
     var on=$('#bCentre').getAttribute('aria-pressed')==='true',
-        has=modelLights.length>0;
+        has=mrig.length>0;
     centreLight.visible=spill.visible=(on && !has);
-    modelLights.forEach(function(l){
-      l.visible=on;
-      l.intensity=(l.userData.baseIntensity||0)*MODEL_GAIN*lampScale;
+    mrig.forEach(function(e){
+      e.light.visible = !!(on && e.on && !e.removed);
+      e.light.intensity = e.val*lampScale;
+      if(e.helper) e.helper.visible = !!gizmosOn && e.light.visible;
     });
   }
 
@@ -6265,7 +6367,8 @@
     point:      {label:'Point',tint:'#f0c98a'},
     spot:       {label:'Spot', tint:'#ffd9a8'},
     area:       {label:'Area', tint:'#cfe0f5'},
-    hemisphere: {label:'Hemi', tint:'#bcd4ff'}
+    hemisphere: {label:'Hemi', tint:'#bcd4ff'},
+    ambient:    {label:'Amb',  tint:'#e6ddc9'}
   };
   var rig=[], seq=0, gizmosOn=false, MAXL=8;
 
@@ -6335,28 +6438,39 @@
   }
 
   function card(e){
+    var model = e.src==='model';
+    var host  = model ? $('#modelLightList') : $('#lightList');
     var box=document.createElement('div'); box.className='lite'; box.dataset.id=e.id;
     box.dataset.off=e.on?'0':'1';
+    e.box=box;
     var hd=document.createElement('div'); hd.className='hd';
 
+    var T=TYPES[e.type]||{label:e.type,tint:'#d8cdb8'};
     var chip=document.createElement('span'); chip.className='kind';
-    chip.textContent=TYPES[e.type].label; chip.style.background=TYPES[e.type].tint;
+    chip.textContent=T.label; chip.style.background=T.tint;
 
     var nm=document.createElement('span'); nm.className='nm'; nm.textContent=e.name;
+    nm.title=e.name+(model?' \u2014 read from the model file':'');
 
     var col=document.createElement('input'); col.type='color';
     col.value='#'+e.light.color.getHexString(); col.title='Colour';
     col.addEventListener('input',function(){ e.light.color.set(col.value); refreshHelper(e); });
 
     var mute=document.createElement('button');
-    mute.textContent='\u25D0'; mute.title='Mute'; mute.style.padding='2px 7px';
+    mute.textContent='\u25D0'; mute.title=e.on?'Mute':'Unmute'; mute.style.padding='2px 7px';
     mute.addEventListener('click',function(){
-      e.on=!e.on; e.light.visible=e.on; box.dataset.off=e.on?'0':'1';
-      if(e.helper) e.helper.visible=gizmosOn&&e.on;
+      e.on=!e.on; box.dataset.off=e.on?'0':'1'; mute.title=e.on?'Mute':'Unmute';
+      if(model){ applyLampOutput(); }
+      else {
+        e.light.visible=e.on;
+        if(e.helper) e.helper.visible=gizmosOn&&e.on;
+      }
     });
 
-    var x=document.createElement('button'); x.className='x'; x.textContent='\u00D7'; x.title='Remove';
+    var x=document.createElement('button'); x.className='x'; x.textContent='\u00D7';
+    x.title = model ? 'Take this light out of the scene' : 'Remove';
     x.addEventListener('click',function(){
+      if(model){ detachModel(e,true); paintModelLights(); applyLampOutput(); return; }
       scene.remove(e.light); if(e.light.target) scene.remove(e.light.target);
       if(e.helper) scene.remove(e.helper);
       rig.splice(rig.indexOf(e),1); box.remove(); emptyCheck();
@@ -6364,15 +6478,25 @@
 
     var more=document.createElement('button');
     more.textContent='more'; more.style.padding='2px 7px'; more.style.fontSize='10.5px';
-    more.setAttribute('aria-pressed','false'); more.title='Placement';
+    more.setAttribute('aria-pressed','false');
+    more.title = model ? 'Reach and cone' : 'Placement';
 
     hd.appendChild(chip); hd.appendChild(nm); hd.appendChild(col);
     hd.appendChild(mute); hd.appendChild(more); hd.appendChild(x);
     box.appendChild(hd);
 
-    var maxI = e.type==='point'?14 : e.type==='spot'?40 : e.type==='area'?24 : 4;
-    slider(box,'Intensity',0,maxI,e.light.intensity,0.05,
-      function(v){return v.toFixed(2)}, function(v){ e.light.intensity=v; refreshHelper(e); });
+    if(model){
+      /* headroom above the authored value, so a file light can be pushed as
+         well as pulled, without the slider losing resolution near its default */
+      var maxM=Math.max(e.def*4, 0.6);
+      slider(box,'Intensity',0,maxM,Math.min(e.val,maxM),maxM/500,
+        function(v){return v.toFixed(2)},
+        function(v){ e.val=v; applyLampOutput(); refreshHelper(e); });
+    } else {
+      var maxI = e.type==='point'?14 : e.type==='spot'?40 : e.type==='area'?24 : 4;
+      slider(box,'Intensity',0,maxI,e.light.intensity,0.05,
+        function(v){return v.toFixed(2)}, function(v){ e.light.intensity=v; refreshHelper(e); });
+    }
 
     var det=document.createElement('div');
     det.style.display='none'; det.style.gap='7px'; det.style.flexDirection='column';
@@ -6384,7 +6508,33 @@
     });
     box.appendChild(det);
 
-    if(e.type==='hemisphere'){
+    if(model){
+      /* a light authored inside the file keeps the place it was authored in;
+         what is worth reaching for is how far it throws and how wide       */
+      if(e.type==='point'||e.type==='spot'){
+        slider(det,'Reach',0.05,8,e.light.distance||1,0.05,
+          function(v){return v.toFixed(2)+' m'},
+          function(v){ e.light.distance=v; refreshHelper(e); });
+        slider(det,'Falloff',0,3,e.light.decay,0.05,
+          function(v){return v.toFixed(2)}, function(v){ e.light.decay=v; });
+      }
+      if(e.type==='spot')
+        slider(det,'Cone',5,80,e.light.angle*180/Math.PI,1,
+          function(v){return Math.round(v)+'\u00B0'},
+          function(v){ e.light.angle=v*Math.PI/180; refreshHelper(e); });
+      if(e.type==='hemisphere' && e.light.groundColor){
+        var mg=document.createElement('div'); mg.className='hd';
+        var mgl=document.createElement('span'); mgl.className='nm';
+        mgl.style.color='var(--dim)'; mgl.style.fontSize='11px'; mgl.textContent='Ground bounce';
+        var mgc=document.createElement('input'); mgc.type='color';
+        mgc.value='#'+e.light.groundColor.getHexString();
+        mgc.addEventListener('input',function(){ e.light.groundColor.set(mgc.value); refreshHelper(e); });
+        mg.appendChild(mgl); mg.appendChild(mgc); det.appendChild(mg);
+      }
+      var note=document.createElement('div'); note.className='note';
+      note.textContent='file value '+e.def.toFixed(2)+' \u00b7 placed by the model';
+      det.appendChild(note);
+    } else if(e.type==='hemisphere'){
       var gr=document.createElement('div'); gr.className='hd';
       var gl=document.createElement('span'); gl.className='nm';
       gl.style.color='var(--dim)'; gl.style.fontSize='11px'; gl.textContent='Ground bounce';
@@ -6403,7 +6553,7 @@
         slider(det,'Cone',5,70,e.light.angle*180/Math.PI,1,function(v){return Math.round(v)+'\u00B0'},
           function(v){ e.light.angle=v*Math.PI/180; refreshHelper(e); });
     }
-    $('#lightList').appendChild(box);
+    host.appendChild(box);
   }
 
   function emptyCheck(){
@@ -6411,7 +6561,7 @@
     var e=l.querySelector('.empty');
     if(rig.length===0 && !e){
       var d=document.createElement('div'); d.className='empty';
-      d.textContent='No scene lights \u2014 only the fixture itself is lit.';
+      d.textContent='No added lights \u2014 the model is lit by its own lights alone.';
       l.appendChild(d);
     } else if(rig.length && e) e.remove();
   }
@@ -6432,6 +6582,13 @@
       centre:$('#bCentre').getAttribute('aria-pressed')==='true',
       edge:$('#bEdge').getAttribute('aria-pressed')==='true',
       wire:$('#bWire').getAttribute('aria-pressed')==='true',
+      model:mrig.map(function(e){
+        return {id:e.id,on:e.on,removed:e.removed,val:e.val,
+                colour:'#'+e.light.color.getHexString(),
+                distance:e.light.distance, decay:e.light.decay,
+                angle:e.type==='spot'?e.light.angle:undefined,
+                ground:e.light.groundColor?('#'+e.light.groundColor.getHexString()):undefined};
+      }),
       lights:rig.map(function(e){
         return {type:e.type,name:e.name,on:e.on,az:e.az,el:e.el,dist:e.dist,
                 intensity:e.light.intensity,
@@ -6453,6 +6610,19 @@
     if(s.lamp!==undefined) setRange('#sLamp',s.lamp);
     applyPreset(s.preset);
     setToggle('#bCentre',s.centre); setToggle('#bEdge',s.edge); setToggle('#bWire',s.wire);
+    if(s.model) s.model.forEach(function(m){
+      var e=null;
+      for(var i=0;i<mrig.length;i++) if(mrig[i].id===m.id){ e=mrig[i]; break; }
+      if(!e) return;
+      detachModel(e,!!m.removed);
+      e.on=m.on; e.val=m.val;
+      e.light.color.set(m.colour);
+      if(m.distance!==undefined) e.light.distance=m.distance;
+      if(m.decay!==undefined)    e.light.decay=m.decay;
+      if(m.angle!==undefined)    e.light.angle=m.angle;
+      if(m.ground && e.light.groundColor) e.light.groundColor.set(m.ground);
+    });
+    paintModelLights(); applyLampOutput();
     clearRig(); s.lights.forEach(function(l){ card(makeLight(l.type,l)); }); emptyCheck();
   }
 
@@ -6508,14 +6678,43 @@
     if((ev.metaKey||ev.ctrlKey) && ev.key.toLowerCase()==='z'){ ev.preventDefault(); revert(); }
   });
 
+  /* the stand-in studio pair. Put up automatically only while no model is
+     loaded yet, or for a model that carries no lights of its own; the file's
+     own rig takes over the moment there is one.                           */
+  function studioFill(auto){
+    var have={};
+    rig.forEach(function(e){ have[e.name]=1; });
+    if(!have.Key){
+      var k=makeLight('directional',{name:'Key', colour:'#ffe9cf',intensity:0.88,az:42,el:44,dist:3.0});
+      k.auto=!!auto; card(k);
+    }
+    if(!have.Sky){
+      var h=makeLight('hemisphere', {name:'Sky', colour:'#bfd0e8',intensity:0.34});
+      h.auto=!!auto; card(h);
+    }
+    emptyCheck();
+  }
+  function dropAutoFill(){
+    rig.slice().forEach(function(e){
+      if(!e.auto) return;
+      scene.remove(e.light); if(e.light.target) scene.remove(e.light.target);
+      if(e.helper) scene.remove(e.helper);
+      rig.splice(rig.indexOf(e),1);
+      if(e.box) e.box.remove();
+    });
+    emptyCheck();
+  }
+
   function resetRig(){
     rig.slice().forEach(function(e){
       scene.remove(e.light); if(e.light.target) scene.remove(e.light.target);
       if(e.helper) scene.remove(e.helper);
     });
     rig.length=0; $('#lightList').innerHTML='';
-    addLight('directional',{name:'Key', colour:'#ffe9cf',intensity:0.88,az:42,el:44,dist:3.0});
-    addLight('hemisphere', {name:'Sky', colour:'#bfd0e8',intensity:0.34});
+    resetModelLights();
+    /* the model's own lights ARE the default rig; only a model that carries
+       none falls back to the stand-in studio pair                          */
+    if(!mrig.length) studioFill(true);
     emptyCheck();
   }
   resetRig();
@@ -6524,10 +6723,21 @@
   Array.prototype.forEach.call(document.querySelectorAll('[data-add]'),function(b){
     b.addEventListener('click',function(){ addLight(b.dataset.add); });
   });
+  $('#bStudio').addEventListener('click',function(){ studioFill(false); });
+  $('#bAllOn').addEventListener('click',function(){
+    mrig.forEach(function(e){ if(!e.removed){ e.on=true; if(e.box) e.box.dataset.off='0'; } });
+    applyLampOutput();
+  });
+  $('#bAllOff').addEventListener('click',function(){
+    mrig.forEach(function(e){ e.on=false; if(e.box) e.box.dataset.off='1'; });
+    applyLampOutput();
+  });
+  $('#bFileReset').addEventListener('click',resetModelLights);
   $('#bGizmo').addEventListener('click',function(){
     gizmosOn=this.getAttribute('aria-pressed')!=='true';
     this.setAttribute('aria-pressed',gizmosOn);
     rig.forEach(function(e){ if(e.helper) e.helper.visible=gizmosOn&&e.on; });
+    mrig.forEach(function(e){ if(e.helper) e.helper.visible=gizmosOn&&e.light.visible; });
   });
   $('#bReset').addEventListener('click',resetRig);
 
@@ -6592,7 +6802,9 @@
 
   /* small scripting hook -- handy for driving the viewer from the console */
   window.pendant={presets:PRESETS, setMaterial:applyPreset, lights:rig, addLight:addLight,
-                  modelLights:function(){return modelLights;},
+                  modelLights:function(){return mrig;},
+                  rawModelLights:function(){return modelLights;},
+                  resetModelLights:resetModelLights, studioFill:studioFill,
                   resetRig:resetRig, revert:revert, history:history,
                   snapshot:snapshot, restore:restore, three:{scene:scene,camera:camera}};
 
@@ -6602,8 +6814,8 @@
     var t=(performance.now()-t0)/1000;
     var flick=1+0.035*Math.sin(t*2.1)+0.018*Math.sin(t*5.7);
     if(centreLight.visible) centreLight.intensity=CENTRE_I*flick;
-    if(keyLight && keyLight.visible)
-      keyLight.intensity=(keyLight.userData.baseIntensity||0)*MODEL_GAIN*lampScale*flick;
+    if(keyEntry && keyEntry.light.visible)
+      keyEntry.light.intensity=keyEntry.val*lampScale*flick;
     controls.update();
     composer.render();
   })();
